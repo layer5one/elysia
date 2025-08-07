@@ -1,106 +1,115 @@
-import os, subprocess, io, contextlib, traceback
-from google import genai
+# tool_service.py
+import os, io, shlex, subprocess, contextlib, traceback, time, json
+import llm  # needed for Toolbox base
 
-# Initialize the Gemini API client once (assumes GEMINI_API_KEY is set in environment)
-try:
-    gemini_client = genai.Client() 
-except Exception as e:
-    gemini_client = None
-    print("Warning: Gemini client initialization failed. Ensure GEMINI_API_KEY is set. Error:", e)
+PROJECT_ROOT = os.path.abspath(os.getcwd())
+MAX_READ_BYTES = 5 * 1024 * 1024  # 5MB cap per read
+MAX_ECHO_CHARS = 10000            # cap what we return to model
+GEMINI_DEFAULT_MODEL = "gemini-2.5-pro"
 
-class ToolService:
-    """Provides various tool functions that the AI can use for extended capabilities."""
-    
-    def __init__(self):
-        # You can initialize any state or allowed paths here
-        self.working_dir = os.getcwd()
-    
-    def read_file(self, filepath: str) -> str:
-        """Read and return the content of the given file."""
+def _safe_path(p: str) -> str:
+    p = os.path.abspath(os.path.expanduser(p))
+    # keep within project root (relax if you want)
+    if not p.startswith(PROJECT_ROOT):
+        raise ValueError("Path outside project root not allowed")
+    return p
+
+class ElysiaTools(llm.Toolbox):
+    """
+    Multi-tool box available to the model via LLM tool calling.
+    Methods are tools. Keep docstrings tight—they become tool docs.
+    """
+
+    def read_file(self, path: str) -> str:
+        """Read a UTF-8 text file from disk and return its content (truncated if huge)."""
+        fp = _safe_path(path)
+        if not os.path.exists(fp):
+            return "[Error: file not found]"
+        if os.path.getsize(fp) > MAX_READ_BYTES:
+            return "[Error: file too large]"
         try:
-            # Security check: optionally, prevent reading very large files or binary files
-            if os.path.getsize(filepath) > 5 * 1024 * 1024:  # 5 MB limit for example
-                return "[Error: File too large to read]"
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            # Truncate content if extremely long to avoid overloading the model context
-            if len(content) > 10000:  # e.g., 10k characters limit
-                return content[:10000] + "\n[Content truncated]"
-            return content
-        except FileNotFoundError:
-            return "[Error: File not found]"
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                data = f.read()
+            if len(data) > MAX_ECHO_CHARS:
+                return data[:MAX_ECHO_CHARS] + "\n[Content truncated]"
+            return data
         except Exception as e:
-            return f"[Error: Could not read file: {e}]"
-    
-    def write_file(self, filepath: str, new_content: str) -> str:
-        """Write the given content to the file. Creates or overwrites the file. Returns a status message."""
+            return f"[Error reading file: {e}]"
+
+    def write_file(self, path: str, content: str) -> str:
+        """Create or overwrite a UTF-8 text file with provided content. Backs up existing as .bak."""
+        fp = _safe_path(path)
         try:
-            # Backup existing file if it exists
-            if os.path.exists(filepath):
-                backup_path = filepath + ".bak"
+            if os.path.exists(fp):
+                bk = fp + ".bak"
                 try:
-                    os.replace(filepath, backup_path)
-                except Exception as e:
-                    # If replace fails (e.g., cross-filesystem), use copy
-                    import shutil
-                    shutil.copy(filepath, backup_path)
-                msg = f"(Backed up original to {backup_path}). "
-            else:
-                msg = ""
-            # Write new content
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(new_content)
-            return msg + f"Successfully wrote to {filepath}."
+                    os.replace(fp, bk)
+                except Exception:
+                    import shutil; shutil.copy(fp, bk)
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(content)
+            return f"[Wrote {len(content)} chars to {fp}]"
         except Exception as e:
-            return f"[Error: Could not write to file: {e}]"
-    
+            return f"[Error writing file: {e}]"
+
+    def append_file(self, path: str, content: str) -> str:
+        """Append text to a UTF-8 file, creating it if missing."""
+        fp = _safe_path(path)
+        try:
+            with open(fp, "a", encoding="utf-8") as f:
+                f.write(content)
+            return f"[Appended {len(content)} chars to {fp}]"
+        except Exception as e:
+            return f"[Error appending file: {e}]"
+
     def execute_python(self, code: str) -> str:
-        """Execute the given Python code and return the stdout and/or error output."""
+        """Execute Python code in-process; return stdout or error traceback. Use `result = ...` to return values."""
         try:
-            # Redirect stdout to capture prints
-            stdout_buffer = io.StringIO()
-            with contextlib.redirect_stdout(stdout_buffer):
-                exec_namespace = {}
+            buf = io.StringIO()
+            ns = {}
+            with contextlib.redirect_stdout(buf):
                 try:
-                    exec(code, exec_namespace)
-                except Exception as e:
-                    # Capture traceback
-                    traceback_str = traceback.format_exc()
-                    return f"[Error during execution]\n{traceback_str}"
-            output = stdout_buffer.getvalue()
-            if output.strip() == "" and 'result' in exec_namespace:
-                # If code defines a variable 'result', return it (as string)
-                output = str(exec_namespace['result'])
-            return output if output else "[Executed successfully with no output]"
-        except Exception as e:
-            err_trace = traceback.format_exc()
-            return f"[Error: Execution failed]\n{err_trace}"
-    
+                    exec(code, ns)
+                except Exception:
+                    return "[Error during execution]\n" + traceback.format_exc()
+            out = buf.getvalue()
+            if (not out.strip()) and ("result" in ns):
+                out = str(ns["result"])
+            if not out.strip():
+                out = "[Executed successfully with no output]"
+            return out[:MAX_ECHO_CHARS] + ("..." if len(out) > MAX_ECHO_CHARS else "")
+        except Exception:
+            return "[Error: execution failed]\n" + traceback.format_exc()
+
     def execute_shell(self, command: str) -> str:
-        """Execute a shell command and return its output (stdout or error). Use with caution!"""
+        """Run a shell command with a short timeout; return stdout or stderr."""
         try:
-            completed = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
-            out = completed.stdout.strip()
-            err = completed.stderr.strip()
-            if completed.returncode != 0 or err:
-                return f"[Shell error] {err if err else 'Command returned non-zero status.'}"
-            return out if out else "[Command executed successfully with no output]"
+            p = subprocess.run(command, shell=True, text=True,
+                               capture_output=True, timeout=20)
+            if p.returncode != 0:
+                err = (p.stderr or "").strip()
+                if not err:
+                    err = f"non-zero exit ({p.returncode})"
+                return f"[Shell error] {err}"
+            out = (p.stdout or "").strip()
+            return out[:MAX_ECHO_CHARS] + ("..." if len(out) > MAX_ECHO_CHARS else "") or "[ok]"
         except subprocess.TimeoutExpired:
-            return "[Error: Command timed out]"
+            return "[Shell error] timed out"
         except Exception as e:
-            return f"[Error: Failed to execute shell command: {e}]"
-    
-    def use_gemini(self, prompt: str) -> str:
-        """Send a prompt to the Gemini model (via API) and return its response."""
-        if gemini_client is None:
-            return "[Error: Gemini client not initialized or API key missing]"
+            return f"[Shell error] {e}"
+
+    def gemini_cli(self, prompt: str, model: str = GEMINI_DEFAULT_MODEL) -> str:
+        """Delegate to GeminiCLI for complex drafting or function creation. Requires GEMINI_API_KEY and `gemini` on PATH."""
+        if not os.getenv("GEMINI_API_KEY"):
+            return "[GeminiCLI error] GEMINI_API_KEY not set"
+        cmd = f'gemini -p {shlex.quote(prompt)} -m {shlex.quote(model)}'
         try:
-            response = gemini_client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
-            result = response.text
-            # Truncate extremely long Gemini responses for safety
-            if len(result) > 10000:
-                result = result[:10000] + "\n[Response truncated]"
-            return result
+            p = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=120)
+            if p.returncode != 0:
+                return f"[GeminiCLI error] {(p.stderr or 'non-zero exit').strip()}"
+            out = (p.stdout or "").strip()
+            return out[:MAX_ECHO_CHARS] + ("..." if len(out) > MAX_ECHO_CHARS else "") or "[GeminiCLI: no output]"
+        except subprocess.TimeoutExpired:
+            return "[GeminiCLI error] timed out"
         except Exception as e:
-            # If any error occurs (e.g., rate limit, API fail), return a message
-            return f"[Error: Gemini API call failed: {e}]"
+            return f"[GeminiCLI error] {e}"
