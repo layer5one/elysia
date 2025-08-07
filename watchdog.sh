@@ -1,19 +1,17 @@
 #!/bin/bash
-# Simple watchdog to restart Elysia on crash
+# watchdog.sh — restart on crash, capture logs
 
 while true; do
-    echo "Starting Elysia at $(date)" >> watchdog.log
-    python3 main_app.py
-    exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        echo "Elysia crashed (exit code $exit_code) at $(date). Restarting..." >> watchdog.log
-        # Capture the last lines of the log for debugging
-        tail -n 30 elysia.log > last_crash_snippet.log
-        # (crash_info.txt will have been written by main_app on exception)
-        sleep 2  # small delay before restart
-        continue
-    else
-        echo "Elysia exited normally at $(date). Watchdog stopping." >> watchdog.log
-        break
-    fi
+  echo "Starting Elysia $(date)" >> watchdog.log
+  python3 main_app.py
+  code=$?
+  if [ $code -ne 0 ]; then
+    echo "Crash (exit $code) $(date)" >> watchdog.log
+    tail -n 40 elysia.log > last_crash_snippet.log
+    # main_app writes crash_info.txt; just pause and relaunch
+    sleep 2
+  else
+    echo "Normal exit $(date)" >> watchdog.log
+    break
+  fi
 done
