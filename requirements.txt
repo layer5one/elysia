@@ -1,14 +1,13 @@
-# Core AI and ML
-ollama
-# torch <-- Commented out (you shall not pass)
-# torchaudio <-- Commented out (you shall not pass)
-# For GPU acceleration on RTX 40-series (CUDA 12.x)
-# --extra-index-url https://download.pytorch.org/whl/cu121 <-- Commented out
+# Core AI / orchestration
+llm>=0.26
+llm-ollama
+# optional fallback/provider
+llm-gemini
 
-# Speech-to-Text
+# Speech
 RealtimeSTT
 
-# Text-to-Speech
+# TTS
 kokoro>=0.9.4
 
 # Audio I/O
@@ -16,11 +15,8 @@ sounddevice
 soundfile
 numpy
 
-# Memory System - Path A (Stable)
+# Memory
 chromadb
 
-# Memory System - Path B (Adventurous)
-#MemoryOS[tree-mem,mem-reader]
-
-# Optional utility for SSML exploration
+# Optional SSML exploration
 ssml-maker
