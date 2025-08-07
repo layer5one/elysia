@@ -1,5 +1,6 @@
 from RealtimeSTT import AudioToTextRecorder
 import logging
+import traceback
 
 class SpeechToTextService:
     """A service for real-time speech-to-text transcription."""
