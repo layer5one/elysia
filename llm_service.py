@@ -1,63 +1,37 @@
-import ollama
+# llm_service.py
+import llm
 import logging
-import traceback
+
+DEFAULT_MODEL = "elysia"  # your Ollama model name; change if needed
 
 class LLMService:
-    """A service for interacting with a local LLM via Ollama."""
+    """LLM wrapper using Simon Willison's `llm` Python API, with tool support."""
 
-    def __init__(self, model='gemma3:12b-it-qat'):
-        """
-        Initializes the LLM service.
-        :param model: The name of the Ollama model to use.
-        """
-        logging.info(f"Initializing LLMService with model '{model}'...")
-        self._model = model
-        self._client = ollama.Client()
-
-        # Verify the model is available locally
+    def __init__(self, model_id: str = DEFAULT_MODEL):
+        self.model_id = model_id
+        logging.info(f"Initializing LLMService via llm: model='{self.model_id}'")
         try:
-            self._client.show(model)
-            logging.info(f"Model '{model}' is available locally.")
-        except ollama.ResponseError as e:
-            logging.error(f"Model '{model}' not found locally. Please run 'ollama pull {model}'.")
-            raise e
-
-    def generate_response(self, conversation_history: list) -> str:
-        """
-        Sends a conversation history to the Ollama model and gets a response.
-        Ensures the final output is always a string.
-        """
-        try:
-            logging.info("Sending prompt to LLM...")
-            response = ollama.chat(model=self._model, messages=conversation_history)
-            response_content = response['message']['content']
-
-            # --- FIX: Force output to be a string ---
-            if isinstance(response_content, list):
-                # If the model returns a list of strings, join them.
-                logging.warning("LLM returned a list, joining to string.")
-                return " ".join(map(str, response_content))
-
-            # Ensure it's a string just in case it's some other type.
-            return str(response_content)
-
+            self.model = llm.get_model(self.model_id)
         except Exception as e:
-            logging.error(f"Error communicating with LLM: {e}")
-            logging.error(traceback.format_exc())
-            return "I'm sorry, I encountered an error and couldn't process your request."
+            logging.error(f"llm.get_model('{self.model_id}') failed: {e}")
+            raise
 
-if __name__ == '__main__':
-    # Example usage of the service
-    print("--- Testing LLMService ---")
-    llm = LLMService()
+    def prompt(self, prompt: str, system: str | None = None, tools: list | None = None) -> str:
+        """
+        One-shot prompt. If tools provided, model may call them; use chain() for auto-return.
+        """
+        resp = self.model.prompt(prompt, system=system or "", tools=tools or [])
+        # If tools were requested, caller can handle resp.tool_calls() etc.
+        return resp.text()
 
-    # This is the corrected conversation history definition.
-    # It's a list of message dictionaries for the test.
-    conversation_history = [
-        {'role': 'system', 'content': 'You are a helpful assistant.'},
-        {'role': 'user', 'content': 'Hello! Tell me a short, interesting fact about the planet Mars.'}
-    ]
-
-    response_text = llm.generate_response(conversation_history)
-    print(f"Assistant: {response_text}")
-    print("--- Test Complete ---")
+    def chain(self, prompt: str, system: str | None = None, tools: list | None = None) -> str:
+        """
+        Run an agent-style chain (model can call tools; results fed back automatically).
+        Returns final stitched text.
+        """
+        chain = self.model.chain(prompt, system=system or "", tools=tools or [])
+        # Gather the full final text
+        chunks = []
+        for chunk in chain:
+            chunks.append(chunk)
+        return "".join(chunks)
