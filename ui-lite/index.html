@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Elysia UI Lite</title>
+  <style>
+    body{background:#0b0b0f;color:#ddd;font:14px/1.5 system-ui;margin:0;padding:16px}
+    .row{display:flex;gap:16px;align-items:center}
+    .badge{padding:4px 8px;border-radius:8px;background:#222}
+    .meter{width:200px;height:12px;background:#222;border-radius:6px;overflow:hidden}
+    .fill{height:100%;background:#6cf;width:0%}
+    canvas{background:#111;border-radius:8px}
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="badge" id="state">idle</div>
+    <div class="meter"><div class="fill" id="rms"></div></div>
+  </div>
+  <canvas id="fft" width="800" height="150"></canvas>
+
+  <script>
+  const WS_URL = (location.hostname === 'localhost' ? 'ws://localhost:8765' : 'ws://' + location.hostname + ':8765');
+  let audioCtx, node, analyser, rmsFill, stateEl, fftCanvas, fftCtx;
+
+  async function setup(){
+    stateEl = document.getElementById('state');
+    rmsFill = document.getElementById('rms');
+    fftCanvas = document.getElementById('fft'); fftCtx = fftCanvas.getContext('2d');
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    await audioCtx.audioWorklet.addModule('./audio/worklet-processor.js');
+    node = new AudioWorkletNode(audioCtx, 'pcm-bridge', { numberOfInputs:0, numberOfOutputs:1, outputChannelCount:[1] });
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048;
+    node.connect(analyser); analyser.connect(audioCtx.destination);
+
+    const ws = new WebSocket(WS_URL);
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if(m.type === 'state'){ stateEl.textContent = m.value; }
+      if(m.type === 'tts_begin'){ stateEl.textContent = 'speaking'; }
+      if(m.type === 'tts_end'){ stateEl.textContent = 'idle'; }
+      if(m.type === 'tts_chunk'){
+        const b = atob(m.pcm);
+        const ab = new ArrayBuffer(b.length); const view = new Uint8Array(ab);
+        for(let i=0;i<b.length;i++) view[i] = b.charCodeAt(i);
+        const f32 = new Float32Array(ab);
+        node.port.postMessage({ type:'push', buf:f32 });
+      }
+    };
+
+    // visualizers
+    const time = new Float32Array(analyser.fftSize);
+    const freq = new Uint8Array(analyser.frequencyBinCount);
+    function loop(){
+      analyser.getFloatTimeDomainData(time);
+      let sum=0; for(let i=0;i<time.length;i++) sum+=time[i]*time[i];
+      const rms = Math.min(1, Math.sqrt(sum/time.length)*5);
+      rmsFill.style.width = (rms*100).toFixed(1)+'%';
+
+      analyser.getByteFrequencyData(freq);
+      fftCtx.clearRect(0,0,fftCanvas.width,fftCanvas.height);
+      const w = fftCanvas.width, h = fftCanvas.height;
+      for(let i=0;i<freq.length;i++){
+        const x = i/freq.length * w;
+        const bar = (freq[i]/255)*h;
+        fftCtx.fillStyle = '#39f'; fftCtx.fillRect(x, h-bar, 2, bar);
+      }
+      requestAnimationFrame(loop);
+    }
+    loop();
+  }
+
+  // user gesture to start audio on some browsers
+  window.addEventListener('click', ()=>{ if(audioCtx?.state==='suspended') audioCtx.resume(); }, { once:true });
+  setup();
+  </script>
+</body>
+</html>
