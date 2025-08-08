@@ -1,7 +1,25 @@
 import chromadb
 import uuid
 import logging
+
+# NEW: journaling
 import json, hashlib, time, os
+JOURNAL_DIR = os.environ.get("ELYSIA_JOURNAL_DIR", "./mem_journal")
+os.makedirs(JOURNAL_DIR, exist_ok=True)
+
+def _journal_path():
+    day = time.strftime("%Y-%m-%d")
+    return os.path.join(JOURNAL_DIR, f"{day}.ndjson")
+
+def _hash_entry(d: dict) -> str:
+    canon = json.dumps(d, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+def _append_journal(entry: dict):
+    # idempotent-ish: embed content hash so the home ingester can dedupe
+    entry["hash"] = _hash_entry(entry)
+    with open(_journal_path(), "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 class ChromaMemoryService:
     """A memory service using ChromaDB for persistent conversational memory."""
@@ -34,24 +52,39 @@ class ChromaMemoryService:
                 f"Assistant responded: {assistant_response}"
             ],
             metadatas=[
-                {"speaker": "user", "turn_id": turn_id},
-                {"speaker": "assistant", "turn_id": turn_id}
+                {"speaker": "user", "turn_id": turn_id, "ts": time.time()},
+                {"speaker": "assistant", "turn_id": turn_id, "ts": time.time()}
             ],
             ids=[f"user_{turn_id}", f"assistant_{turn_id}"]
         )
         logging.info(f"Added memory for turn {turn_id}.")
+
+        # NEW: journal both sides of the turn (append-only, NDJSON)
+        _append_journal({
+            "type":"turn", "ts": time.time(), "turn_id": turn_id,
+            "speaker":"user", "text": user_input
+        })
+        _append_journal({
+            "type":"turn", "ts": time.time(), "turn_id": turn_id,
+            "speaker":"assistant", "text": assistant_response
+        })
 
     def add_system_memory(self, system_note: str):
         """Adds a system-level memory, like a self-reflection."""
         note_id = str(uuid.uuid4())
         self._collection.add(
             documents=[system_note],
-            metadatas=[{"speaker": "system"}],
+            metadatas=[{"speaker": "system", "ts": time.time()}],
             ids=[f"system_{note_id}"]
         )
         logging.info(f"Added system memory: '{system_note}'")
 
-    # memory_service_chroma.py
+        # NEW: journal system notes too
+        _append_journal({
+            "type":"system", "ts": time.time(),
+            "speaker":"system", "text": system_note
+        })
+
     def retrieve_relevant_memories(self, query: str, n_results: int = 5) -> list[str]:
         """
         Retrieves the most relevant memories for a given query.
@@ -59,18 +92,13 @@ class ChromaMemoryService:
         :param n_results: The number of results to retrieve.
         :return: A list of the most relevant document strings.
         """
-        results = self._collection.query(
-            query_texts=[query],
-            n_results=n_results
-        )
+        results = self._collection.query(query_texts=[query], n_results=n_results)
 
-        # results['documents'] is a list of lists. We only have one query, so we want the first list.
         nested_docs = results.get('documents', [])
         if not nested_docs:
-            return [] # Return empty list if no documents were found
+            return []
 
-        retrieved_docs = nested_docs[0] # This extracts the list of strings we need
-
+        retrieved_docs = nested_docs[0]
         logging.info(f"Retrieved {len(retrieved_docs)} memories for query '{query}'.")
         return retrieved_docs
 
