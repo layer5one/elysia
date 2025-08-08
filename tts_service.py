@@ -1,8 +1,6 @@
 from kokoro import KPipeline
-import sounddevice as sd
-import numpy as np
-import traceback
-import logging
+import sounddevice as sd, numpy as np, traceback, logging, time
+from tts_ws import WS  # NEW
 
 class TextToSpeechService:
     """A service for generating high-quality speech from text."""
