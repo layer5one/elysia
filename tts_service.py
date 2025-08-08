@@ -1,6 +1,16 @@
 from kokoro import KPipeline
-import sounddevice as sd, numpy as np, traceback, logging, time
-from tts_ws import WS  # NEW
+import sounddevice as sd
+import numpy as np
+import traceback
+import logging
+import time  # NEW: timestamps for stream events
+
+# NEW: WS broadcaster for UI
+try:
+    from tts_ws import WS
+except Exception:
+    WS = None
+    logging.warning("tts_ws.WS not available; UI streaming disabled.")
 
 class TextToSpeechService:
     """A service for generating high-quality speech from text."""
@@ -29,42 +39,53 @@ class TextToSpeechService:
     def speak(self, text: str):
         """
         Generates audio from text and plays it using sounddevice.
+        Also streams PCM chunks over WS for the UI (if WS is available).
         """
         if not text:
             return
 
         try:
             logging.info(f"TTS generating audio for: '{text}'")
-            audio_chunks = []
+            audio_chunks = []  # keep your original name
 
-            # KPipeline is called directly, not via a .tts() method.
-            # It yields Result objects which contain the audio.
-            # The parameter is 'voice', not 'voice_preset'.
+            msg_id = f"msg_{int(time.time()*1000)}"
+            if WS: WS.tts_begin(self.sample_rate, msg_id)
+
+            # KPipeline yields Result objects which contain the audio (torch.FloatTensor)
             for result in self.engine(text=text, voice=self.voice):
                 if result.audio is not None:
-                    # The audio is a torch.FloatTensor, convert to numpy array for sounddevice
-                    print(">>> TTS DEBUG — result.audio =", type(result.audio))
-                    print(">>> requires_grad:", getattr(result.audio, "requires_grad", "N/A"))
-                    print(">>> is_cuda:", getattr(result.audio, "is_cuda", "N/A"))
-                    print(">>> device:", getattr(result.audio, "device", "N/A"))
+                    # Debug prints you had before (optional)
+                    # print(">>> TTS DEBUG — result.audio =", type(result.audio))
+                    # print(">>> requires_grad:", getattr(result.audio, "requires_grad", "N/A"))
+                    # print(">>> is_cuda:", getattr(result.audio, "is_cuda", "N/A"))
+                    # print(">>> device:", getattr(result.audio, "device", "N/A"))
 
-                    audio_chunk = result.audio.cpu().numpy()
+                    # Convert to numpy float32 for sounddevice and WS
+                    audio_chunk = result.audio.detach().cpu().numpy().astype(np.float32)
                     audio_chunks.append(audio_chunk)
+
+                    # Stream to UI if available
+                    if WS:
+                        WS.tts_chunk(msg_id, time.time(), audio_chunk.tobytes())
 
             if not audio_chunks:
                 logging.warning("TTS generated no audio chunks.")
+                if WS: WS.tts_end(msg_id)
                 return
 
             full_audio = np.concatenate(audio_chunks, axis=0)
             sd.play(full_audio, self.sample_rate)
             sd.wait()
 
+            if WS: WS.tts_end(msg_id)
+
         except Exception as e:
             logging.error(f"Error in TTS service: {e}")
             logging.error(traceback.format_exc())
+            if WS: WS.state("error")
 
 if __name__ == '__main__':
-    # Example usage of the service
+    # Example usage
     tts = TextToSpeechService()
 
     # Example with emphasis control
