@@ -20,3 +20,6 @@ chromadb
 
 # Optional SSML exploration
 ssml-maker
+
+#metric only
+websockets
