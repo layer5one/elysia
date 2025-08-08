@@ -1,6 +1,7 @@
 import chromadb
 import uuid
 import logging
+import json, hashlib, time, os
 
 class ChromaMemoryService:
     """A memory service using ChromaDB for persistent conversational memory."""
