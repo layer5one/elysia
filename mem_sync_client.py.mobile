@@ -1,0 +1,34 @@
+# mem_sync_client.py
+import os, glob, requests, time
+HOME = os.getenv("ELYSIA_HOME", "http://192.168.1.10:8787")
+TOKEN = os.getenv("ELYSIA_SYNC_TOKEN", "changeme")
+JOURNAL_DIR = os.getenv("ELYSIA_JOURNAL_DIR", "./mem_journal")
+
+def reachable():
+    try:
+        r = requests.get(HOME + "/docs", timeout=2)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+def sync_one(path):
+    with open(path, "rb") as f:
+        files = {"file": (os.path.basename(path), f, "application/x-ndjson")}
+        r = requests.post(HOME + "/import-ndjson", headers={"X-Auth": TOKEN}, files=files, timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+def main():
+    while True:
+        if reachable():
+            for p in sorted(glob.glob(os.path.join(JOURNAL_DIR, "*.ndjson"))):
+                try:
+                    res = sync_one(p)
+                    os.rename(p, p + ".synced")
+                    print("synced", p, res)
+                except Exception as e:
+                    print("failed", p, e)
+        time.sleep(30)
+
+if __name__ == "__main__":
+    main()
